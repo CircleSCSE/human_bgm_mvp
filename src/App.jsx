@@ -7,16 +7,39 @@ import './App.css';
 function App() {
   const [musicList, setMusicList] = useState([]);
 
-  // 1. Firestore에서 음악 목록 가져오기
+  // 1. 데이터 가져오기 (이 부분은 잘 되니까 그대로 유지)
   useEffect(() => {
     const fetchMusic = async () => {
       try {
         const querySnapshot = await getDocs(collection(db, "music"));
-        const list = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
+        
+        const promises = querySnapshot.docs.map(async (doc) => {
+          const data = doc.data();
+          let fileName = data.file_name;
+          
+          if (fileName && !fileName.includes('.')) {
+            fileName += '.mp3';
+          }
+
+          let audioUrl = "";
+          try {
+            const storageRef = ref(storage, `music/${fileName}`);
+            audioUrl = await getDownloadURL(storageRef);
+          } catch (err) {
+            console.error("오디오 URL 에러:", fileName);
+          }
+
+          return {
+            id: doc.id,
+            ...data,
+            realFileName: fileName, 
+            audioUrl: audioUrl      
+          };
+        });
+
+        const list = await Promise.all(promises);
         setMusicList(list);
+
       } catch (error) {
         console.error("데이터 가져오기 실패:", error);
       }
@@ -24,55 +47,35 @@ function App() {
     fetchMusic();
   }, []);
 
-  // 2. 다운로드 핸들러 (업그레이드 버전)
+  // 2. 다운로드 핸들러 (복잡한 거 다 뺌 -> 무조건 새 창 열기)
   const handleDownload = async (musicItem) => {
+    if (!musicItem.audioUrl) {
+      alert("파일 주소를 찾을 수 없습니다.");
+      return;
+    }
+
     const isAgreed = window.confirm(
-      `[출처 표기 약속]\n\n아래 출처를 영상 설명란에 꼭 표기해주세요.\n\n"${musicItem.source_text}"\n\n약속하십니까?`
+      `[출처 표기 약속]\n\n"${musicItem.source_text}"\n\n이 출처를 꼭 표기하겠습니까?`
     );
 
     if (isAgreed) {
       try {
-        // 2-1. 다운로드 수 증가
+        // 1. 카운트 증가
         const musicDocRef = doc(db, "music", musicItem.id);
-        await updateDoc(musicDocRef, {
+        updateDoc(musicDocRef, {
           downloadCount: increment(1)
-        });
+        }); // 기다리지 않고(await 없이) 바로 실행해서 딜레이 줄임
 
-        // 2-2. 파일 URL 및 이름 준비
-        let fileName = musicItem.file_name;
-        if (!fileName.includes('.')) {
-          fileName += '.mp3';
-        }
-        const storageRef = ref(storage, `music/${musicItem.file_name}`);
-        const url = await getDownloadURL(storageRef);
+        // 2. 그냥 새 탭으로 열어버림 (제일 확실함)
+        window.open(musicItem.audioUrl, '_blank');
 
-        // 2-3. [핵심] 강제 다운로드 시도 (Fetch -> Blob)
-        // 브라우저가 재생해버리는 걸 막기 위해, 데이터를 덩어리(Blob)로 받아옵니다.
-        try {
-          const response = await fetch(url);
-          const blob = await response.blob();
-          const blobUrl = window.URL.createObjectURL(blob);
-
-          const link = document.createElement('a');
-          link.href = blobUrl;
-          link.download = fileName;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(blobUrl);
-          
-        } catch (corsError) {
-          // 만약 보안(CORS) 문제로 강제 다운로드가 막히면 -> 새 탭으로 열어줌 (플랜 B)
-          console.warn("CORS 보안으로 인해 새 탭에서 엽니다.", corsError);
-          const newWindow = window.open(url, '_blank');
-          if (newWindow) {
-            alert("보안 설정 때문에 자동 다운로드가 차단되었습니다.\n새 탭이 열리면 [Command + S]를 눌러 저장해주세요!");
-          }
-        }
+        // 3. 안내 메시지
+        alert("새 탭에서 음악이 열렸나요?\n\n[Command + S] (맥북)\n[Ctrl + S] (윈도우)\n\n를 누르면 저장됩니다!");
 
       } catch (error) {
-        console.error("다운로드 로직 오류:", error);
-        alert("다운로드 중 문제가 발생했습니다.");
+        console.error("오류:", error);
+        // 에러 나도 일단 열어줌
+        window.open(musicItem.audioUrl, '_blank');
       }
     }
   };
@@ -87,13 +90,23 @@ function App() {
         {musicList.map(music => (
           <div key={music.id} className="music-item">
             <h2>{music.title}</h2>
-            <audio controls>
-               <source src={`https://firebasestorage.googleapis.com/v0/b/human-bgm-mvp.appspot.com/o/music%2F${music.file_name}.mp3?alt=media`} type="audio/mpeg" />
-               브라우저가 오디오 태그를 지원하지 않습니다.
-            </audio>
-            <button onClick={() => handleDownload(music)}>
-              다운로드
-            </button>
+            
+            {/* 미리듣기 */}
+            {music.audioUrl ? (
+              <audio controls src={music.audioUrl}>
+                 오디오 지원 안함
+              </audio>
+            ) : (
+              <p style={{color:'red'}}>로딩 실패</p>
+            )}
+
+            {/* 다운로드 버튼 */}
+            <div className="button-group">
+              <button onClick={() => handleDownload(music)}>
+                다운로드 (새 탭에서 열기)
+              </button>
+            </div>
+            
             <p className="source-text">출처: {music.source_text}</p>
           </div>
         ))}
