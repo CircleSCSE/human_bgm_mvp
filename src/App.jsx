@@ -16,7 +16,6 @@ function App() {
           id: doc.id,
           ...doc.data()
         }));
-        console.log("가져온 데이터:", list); // 콘솔에서 데이터 확인용
         setMusicList(list);
       } catch (error) {
         console.error("데이터 가져오기 실패:", error);
@@ -25,42 +24,55 @@ function App() {
     fetchMusic();
   }, []);
 
-  // 2. 다운로드 핸들러
+  // 2. 다운로드 핸들러 (업그레이드 버전)
   const handleDownload = async (musicItem) => {
-    // 2-1. 출처 표기 약속 (DB 필드명 source_text로 수정됨)
     const isAgreed = window.confirm(
       `[출처 표기 약속]\n\n아래 출처를 영상 설명란에 꼭 표기해주세요.\n\n"${musicItem.source_text}"\n\n약속하십니까?`
     );
 
     if (isAgreed) {
       try {
-        // 2-2. 다운로드 수 증가
+        // 2-1. 다운로드 수 증가
         const musicDocRef = doc(db, "music", musicItem.id);
         await updateDoc(musicDocRef, {
           downloadCount: increment(1)
         });
 
-        // 2-3. Storage URL 가져오기 
-        // (주의: DB에 '.mp3'가 없으면 코드가 알아서 붙여주도록 수정함)
+        // 2-2. 파일 URL 및 이름 준비
         let fileName = musicItem.file_name;
         if (!fileName.includes('.')) {
-          fileName += '.mp3'; // 확장자가 없으면 .mp3를 붙여라!
+          fileName += '.mp3';
         }
-        
-        const storageRef = ref(storage, `music/${fileName}`);
+        const storageRef = ref(storage, `music/${musicItem.file_name}`);
         const url = await getDownloadURL(storageRef);
 
-        // 2-4. 진짜 다운로드 실행
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        // 2-3. [핵심] 강제 다운로드 시도 (Fetch -> Blob)
+        // 브라우저가 재생해버리는 걸 막기 위해, 데이터를 덩어리(Blob)로 받아옵니다.
+        try {
+          const response = await fetch(url);
+          const blob = await response.blob();
+          const blobUrl = window.URL.createObjectURL(blob);
+
+          const link = document.createElement('a');
+          link.href = blobUrl;
+          link.download = fileName;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          window.URL.revokeObjectURL(blobUrl);
+          
+        } catch (corsError) {
+          // 만약 보안(CORS) 문제로 강제 다운로드가 막히면 -> 새 탭으로 열어줌 (플랜 B)
+          console.warn("CORS 보안으로 인해 새 탭에서 엽니다.", corsError);
+          const newWindow = window.open(url, '_blank');
+          if (newWindow) {
+            alert("보안 설정 때문에 자동 다운로드가 차단되었습니다.\n새 탭이 열리면 [Command + S]를 눌러 저장해주세요!");
+          }
+        }
 
       } catch (error) {
-        console.error("다운로드 오류 상세:", error);
-        alert("파일을 찾을 수 없습니다. (콘솔 확인 필요)");
+        console.error("다운로드 로직 오류:", error);
+        alert("다운로드 중 문제가 발생했습니다.");
       }
     }
   };
@@ -75,18 +87,13 @@ function App() {
         {musicList.map(music => (
           <div key={music.id} className="music-item">
             <h2>{music.title}</h2>
-            
-            {/* 오디오 플레이어 (DB 필드명 file_name 사용) */}
             <audio controls>
-               {/* 주의: 이 부분은 배포 후 CORS 문제로 재생 안 될 수도 있지만, 다운로드는 될 겁니다 */}
                <source src={`https://firebasestorage.googleapis.com/v0/b/human-bgm-mvp.appspot.com/o/music%2F${music.file_name}.mp3?alt=media`} type="audio/mpeg" />
+               브라우저가 오디오 태그를 지원하지 않습니다.
             </audio>
-
             <button onClick={() => handleDownload(music)}>
               다운로드
             </button>
-            
-            {/* DB 필드명 source_text로 수정됨 */}
             <p className="source-text">출처: {music.source_text}</p>
           </div>
         ))}
